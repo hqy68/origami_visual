@@ -20,7 +20,9 @@ from pydantic import ValidationError
 from .generator import BodyPlan
 
 MODEL = os.environ.get("ORIGAMI_CLAUDE_MODEL", "claude-opus-5-5")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+# The Lite model: plenty for naming a subject and its flaps, and far less likely than the
+# flagship Flash model to be overloaded for free-tier keys.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_ATTEMPTS = 3
 GEMINI_RETRY_DELAY = 1.5  # seconds; grows with each retry
