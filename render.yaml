@@ -14,6 +14,9 @@ services:
         value: 3.12.8
       - key: CORS_ORIGINS
         value: https://origamivisual.vercel.app,http://localhost:3000
-      # Optional: enables photo recognition. Render asks for the value when you create the Blueprint.
+      # Optional: enables photo recognition. Set either key (Gemini has a free tier).
+      # If both are set, VISION_PROVIDER=claude|gemini picks one.
+      - key: GEMINI_API_KEY
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false

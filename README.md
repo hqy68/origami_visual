@@ -12,7 +12,9 @@ Backend (port 8000):
 ```sh
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-echo "ANTHROPIC_API_KEY=sk-..." > .env   # optional: enables photo recognition
+# optional: enables photo recognition. Use either key (Gemini has a free tier);
+# if both are set, VISION_PROVIDER=claude|gemini picks one.
+echo "GEMINI_API_KEY=..." > .env         # or ANTHROPIC_API_KEY=sk-ant-...
 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 

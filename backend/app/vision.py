@@ -1,6 +1,8 @@
-"""Claude-powered body-plan extraction from a photo or a free-text description.
+"""AI body-plan extraction from a photo or a free-text description.
 
-Optional: if no Anthropic credentials are configured, callers fall back to the
+Two interchangeable providers: Claude (ANTHROPIC_API_KEY) and Google Gemini
+(GEMINI_API_KEY). VISION_PROVIDER=claude|gemini picks one when both keys are set;
+otherwise whichever key exists is used. With neither, callers fall back to the
 keyword planner (text) or return a clear error (photos).
 """
 from __future__ import annotations
@@ -11,10 +13,15 @@ import os
 from typing import Optional
 
 import anthropic
+import requests
+from pydantic import ValidationError
 
 from .generator import BodyPlan
 
 MODEL = os.environ.get("ORIGAMI_CLAUDE_MODEL", "claude-opus-5-5")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+NO_KEY = "Set GEMINI_API_KEY or ANTHROPIC_API_KEY on the backend to enable photo identification."
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -49,20 +56,122 @@ class VisionUnavailable(RuntimeError):
 _client: Optional[anthropic.Anthropic] = None
 
 
+def _has_claude() -> bool:
+    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+
+
+def _has_gemini() -> bool:
+    return bool(os.environ.get("GEMINI_API_KEY"))
+
+
+def provider() -> Optional[str]:
+    """The provider to use: 'claude', 'gemini', or None when no key is configured."""
+    choice = os.environ.get("VISION_PROVIDER", "").strip().lower()
+    if choice == "claude" and _has_claude():
+        return "claude"
+    if choice == "gemini" and _has_gemini():
+        return "gemini"
+    if _has_claude():
+        return "claude"
+    if _has_gemini():
+        return "gemini"
+    return None
+
+
+def available() -> bool:
+    return provider() is not None
+
+
 def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
-        if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-            raise VisionUnavailable("Set ANTHROPIC_API_KEY in backend/.env to enable photo identification.")
+        if not _has_claude():
+            raise VisionUnavailable(NO_KEY)
         _client = anthropic.Anthropic()
     return _client
 
 
-def available() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+def _to_plan(data: dict, source: str) -> BodyPlan:
+    if not data.pop("recognized", True):
+        raise VisionUnavailable("No clear object found in the photo. Try a closer, uncluttered shot.")
+    try:
+        return BodyPlan(**data, source=source)
+    except (TypeError, ValidationError) as e:
+        raise VisionUnavailable("The AI returned an unexpected answer; try again.") from e
 
 
 def _call(content: list) -> BodyPlan:
+    if provider() == "gemini":
+        return _call_gemini(content)
+    if provider() is None:
+        raise VisionUnavailable(NO_KEY)
+    return _call_claude(content)
+
+
+def _gemini_schema(schema: dict) -> dict:
+    """Gemini's responseSchema is an OpenAPI subset: drop keys it rejects."""
+    out = {k: v for k, v in schema.items() if k != "additionalProperties"}
+    if "properties" in out:
+        out["properties"] = {k: _gemini_schema(v) for k, v in out["properties"].items()}
+    if "items" in out:
+        out["items"] = _gemini_schema(out["items"])
+    return out
+
+
+def _call_gemini(content: list) -> BodyPlan:
+    parts = []
+    for block in content:
+        if block["type"] == "image":
+            src = block["source"]
+            parts.append({"inline_data": {"mime_type": src["media_type"], "data": src["data"]}})
+        else:
+            parts.append({"text": block["text"]})
+    body = {
+        "system_instruction": {"parts": [{"text": SYSTEM}]},
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": _gemini_schema(PLAN_SCHEMA),
+        },
+    }
+    try:
+        r = requests.post(
+            GEMINI_URL.format(model=GEMINI_MODEL),
+            headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+            json=body,
+            timeout=60,
+        )
+    except requests.RequestException as e:
+        raise VisionUnavailable("Could not reach Gemini; try again.") from e
+    if r.status_code in (401, 403):
+        raise VisionUnavailable("Gemini API key was rejected.")
+    if r.status_code == 429:
+        raise VisionUnavailable("Gemini is rate-limited right now (free-tier limit?); try again shortly.")
+    if r.status_code == 400:
+        msg = r.json().get("error", {}).get("message", "") if r.headers.get("content-type", "").startswith("application/json") else ""
+        if "API key" in msg:
+            raise VisionUnavailable("Gemini API key was rejected.")
+        raise VisionUnavailable(f"Gemini could not read that input: {msg or 'bad request'}")
+    if not r.ok:
+        raise VisionUnavailable("Could not reach Gemini; try again.")
+
+    payload = r.json()
+    candidates = payload.get("candidates") or []
+    if not candidates:
+        if payload.get("promptFeedback", {}).get("blockReason"):
+            raise VisionUnavailable("Gemini declined to identify this image.")
+        raise VisionUnavailable("Gemini returned no answer.")
+    text = "".join(p.get("text", "") for p in candidates[0].get("content", {}).get("parts", []))
+    if not text:
+        raise VisionUnavailable("Gemini declined to identify this image.")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise VisionUnavailable("Gemini returned an unexpected answer; try again.") from e
+    return _to_plan(data, "gemini")
+
+
+def _call_claude(content: list) -> BodyPlan:
     client = _get_client()
     try:
         response = client.beta.messages.create(
@@ -88,10 +197,7 @@ def _call(content: list) -> BodyPlan:
     text = next((b.text for b in response.content if b.type == "text"), None)
     if not text:
         raise VisionUnavailable("Claude returned no answer.")
-    data = json.loads(text)
-    if not data.pop("recognized", True):
-        raise VisionUnavailable("No clear object found in the photo. Try a closer, uncluttered shot.")
-    return BodyPlan(**data, source="claude")
+    return _to_plan(json.loads(text), "claude")
 
 
 def plan_from_image(image: bytes, media_type: str, hint: str = "") -> BodyPlan:

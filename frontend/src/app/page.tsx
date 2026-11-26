@@ -8,6 +8,7 @@ import { api, downloadJson, downloadText, slug, type GenerateResponse, type Heal
 type Mode = "text" | "photo";
 const EXAMPLES = ["crane", "koi fish", "tulip", "fox", "paper airplane", "box"];
 const MAX_BYTES = 5 * 1024 * 1024;
+const SOURCE_LABEL: Record<string, string> = { keywords: "keywords", claude: "Claude", gemini: "Gemini" };
 
 export default function Studio() {
   const [mode, setMode] = useState<Mode>("text");
@@ -143,7 +144,7 @@ export default function Studio() {
             </div>
             {health && !health.vision && (
               <p className="note">
-                Photo recognition needs an Anthropic API key on the backend (ANTHROPIC_API_KEY). Without it, add a
+                Photo recognition isn&apos;t set up on the server yet (it needs a Gemini or Anthropic API key). Add a
                 hint and the hint is used instead.
               </p>
             )}
@@ -161,7 +162,7 @@ export default function Studio() {
             <div className="result-head">
               <div>
                 <p className="eyebrow">
-                  {g.category} · body plan from {g.body_plan_source === "keywords" ? "keywords" : "Claude"}
+                  {g.category} · body plan from {SOURCE_LABEL[g.body_plan_source] ?? g.body_plan_source}
                 </p>
                 <h2>{g.subject}</h2>
                 <p>

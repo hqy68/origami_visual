@@ -73,6 +73,7 @@ export interface Health {
   ok: boolean;
   catalog_count: number;
   vision: boolean;
+  vision_provider: "claude" | "gemini" | null;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

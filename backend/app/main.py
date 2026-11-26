@@ -50,7 +50,8 @@ def _respond(plan: BodyPlan, warning: Optional[str] = None) -> dict:
 def health() -> dict:
     with db.connect() as conn:
         count = conn.execute("SELECT COUNT(*) FROM models").fetchone()[0]
-    return {"ok": True, "catalog_count": count, "vision": vision.available()}
+    return {"ok": True, "catalog_count": count, "vision": vision.available(),
+            "vision_provider": vision.provider()}
 
 
 @app.get("/api/search")
