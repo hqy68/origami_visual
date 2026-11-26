@@ -95,12 +95,31 @@ def test_gemini_unrecognized_image(monkeypatch, capture):
     (FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "not json"}]}}]}), "unexpected"),
     (FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "{\"subject\": 1}"}]}}]}), "unexpected"),
     (FakeResponse(500, {}), "Could not reach"),
+    (FakeResponse(503, {}), "overloaded"),
 ])
 def test_gemini_errors(monkeypatch, capture, response, message):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setattr(vision, "GEMINI_RETRY_DELAY", 0)
     capture(response)
     with pytest.raises(vision.VisionUnavailable, match=message):
         vision.plan_from_text("crane")
+
+
+def test_gemini_retries_when_overloaded(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setattr(vision, "GEMINI_RETRY_DELAY", 0)
+    responses = [FakeResponse(503, {}), FakeResponse(503, {}), gemini_ok()]
+    monkeypatch.setattr(vision.requests, "post", lambda *a, **kw: responses.pop(0))
+    assert vision.plan_from_text("koi").subject == "koi fish"
+    assert responses == []  # used all three attempts
+
+
+def test_gemini_does_not_retry_bad_key(monkeypatch, capture):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    calls = capture(FakeResponse(403, {}))
+    with pytest.raises(vision.VisionUnavailable, match="rejected"):
+        vision.plan_from_text("crane")
+    assert len(calls) == 1
 
 
 def test_api_falls_back_to_keywords_when_gemini_fails(monkeypatch, capture):

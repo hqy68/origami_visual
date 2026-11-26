@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from typing import Optional
 
 import anthropic
@@ -21,7 +22,9 @@ from .generator import BodyPlan
 MODEL = os.environ.get("ORIGAMI_CLAUDE_MODEL", "claude-opus-5-5")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-NO_KEY = "Set GEMINI_API_KEY or ANTHROPIC_API_KEY on the backend to enable photo identification."
+GEMINI_ATTEMPTS = 3
+GEMINI_RETRY_DELAY = 1.5  # seconds; grows with each retry
+NO_KEY ="Set GEMINI_API_KEY or ANTHROPIC_API_KEY on the backend to enable photo identification."
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -134,15 +137,26 @@ def _call_gemini(content: list) -> BodyPlan:
             "responseSchema": _gemini_schema(PLAN_SCHEMA),
         },
     }
-    try:
-        r = requests.post(
-            GEMINI_URL.format(model=GEMINI_MODEL),
-            headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
-            json=body,
-            timeout=60,
-        )
-    except requests.RequestException as e:
-        raise VisionUnavailable("Could not reach Gemini; try again.") from e
+    r = None
+    for attempt in range(GEMINI_ATTEMPTS):
+        if attempt:
+            time.sleep(GEMINI_RETRY_DELAY * attempt)
+        try:
+            r = requests.post(
+                GEMINI_URL.format(model=GEMINI_MODEL),
+                headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+                json=body,
+                timeout=60,
+            )
+        except requests.RequestException as e:
+            if attempt == GEMINI_ATTEMPTS - 1:
+                raise VisionUnavailable("Could not reach Gemini; try again.") from e
+            continue
+        # 500/503 are Gemini's "overloaded, try again" answers; anything else is final.
+        if r.status_code not in (500, 503):
+            break
+    if r.status_code == 503:
+        raise VisionUnavailable("Gemini is overloaded right now; try again in a minute.")
     if r.status_code in (401, 403):
         raise VisionUnavailable("Gemini API key was rejected.")
     if r.status_code == 429:
